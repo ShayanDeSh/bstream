@@ -1,0 +1,17 @@
+[package]
+name = "bstream-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+bstream-common = { path = "../bstream-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "bstream"
+path = "src/main.rs"

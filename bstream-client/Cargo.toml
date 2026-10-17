@@ -1,0 +1,9 @@
+[package]
+name = "bstream-client"
+version = "0.1.0"
+edition.workspace = true
+
+license.workspace = true
+
+[dependencies]
+bstream-common = { path = "../bstream-common" }
