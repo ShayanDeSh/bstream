@@ -1,5 +1,6 @@
 pub mod kafka;
 pub mod local;
+pub mod redis;
 
 use bstream_common::frame::FrameHeader;
 use bytes::Bytes;

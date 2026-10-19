@@ -13,6 +13,8 @@ pub struct Config {
     pub subscriber_buffer: usize,
     /// Required if any route has a Kafka topic.
     pub kafka: Option<Kafka>,
+    /// Required if any route has a Redis stream.
+    pub redis: Option<Redis>,
     pub routes: Vec<Route>,
 }
 
@@ -23,14 +25,26 @@ pub struct Kafka {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct Redis {
+    /// For example `redis://127.0.0.1:6379`.
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Route {
     pub id: u32,
     pub kafka: Option<KafkaRoute>,
+    pub redis: Option<RedisRoute>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct KafkaRoute {
     pub topic: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedisRoute {
+    pub stream: String,
 }
 
 fn default_subscriber_buffer() -> usize {
@@ -59,6 +73,11 @@ impl Config {
             ensure!(
                 route.kafka.is_none() || config.kafka.is_some(),
                 "route {} has a kafka topic but there is no [kafka] section",
+                route.id
+            );
+            ensure!(
+                route.redis.is_none() || config.redis.is_some(),
+                "route {} has a redis stream but there is no [redis] section",
                 route.id
             );
         }

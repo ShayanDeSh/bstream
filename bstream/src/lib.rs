@@ -13,6 +13,7 @@ use crate::{
         Sink,
         kafka::{self, KafkaSink},
         local::LocalSink,
+        redis::RedisSink,
     },
 };
 
@@ -35,6 +36,11 @@ impl Router {
             .as_ref()
             .map(|kafka| kafka::producer(&kafka.brokers))
             .transpose()?;
+        let redis = config
+            .redis
+            .as_ref()
+            .map(|redis| redis::Client::open(redis.url.as_str()))
+            .transpose()?;
         let routes = config
             .routes
             .iter()
@@ -44,6 +50,12 @@ impl Router {
                     sinks.push(Arc::new(KafkaSink::new(
                         Arc::clone(producer),
                         kafka.topic.clone(),
+                    )));
+                }
+                if let (Some(redis_route), Some(client)) = (&route.redis, &redis) {
+                    sinks.push(Arc::new(RedisSink::new(
+                        client.clone(),
+                        redis_route.stream.clone(),
                     )));
                 }
                 (route.id, sinks)

@@ -96,6 +96,55 @@ fn kafka_section_without_brokers_is_rejected() {
     assert!(Config::from_toml(text).is_err());
 }
 
+/// Given a config with a [redis] section and one of two routes naming a stream,
+/// when it is parsed,
+/// then the URL is read and only that route has a Redis stream.
+#[test]
+fn parses_redis_url_and_route_stream() {
+    let config = Config::from_toml(
+        r#"
+        ingest = "127.0.0.1:0"
+        subscribe = "127.0.0.1:0"
+        routes = [{ id = 1, redis = { stream = "orders" } }, { id = 2 }]
+
+        [redis]
+        url = "redis://cache:6379"
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(config.redis.unwrap().url, "redis://cache:6379");
+    assert_eq!(config.routes[0].redis.as_ref().unwrap().stream, "orders");
+    assert!(config.routes[1].redis.is_none());
+}
+
+/// Given a route with a Redis stream and no [redis] section,
+/// when it is parsed,
+/// then parsing fails naming the route.
+#[test]
+fn redis_route_without_redis_section_is_rejected() {
+    let err = Config::from_toml(
+        r#"
+        ingest = "127.0.0.1:0"
+        subscribe = "127.0.0.1:0"
+        routes = [{ id = 5, redis = { stream = "orders" } }]
+        "#,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("route 5"), "{err}");
+}
+
+/// Given a [redis] section without a URL,
+/// when it is parsed,
+/// then parsing fails.
+#[test]
+fn redis_section_without_url_is_rejected() {
+    let text = "ingest = \"127.0.0.1:0\"\nsubscribe = \"127.0.0.1:0\"\nroutes = []\n[redis]";
+
+    assert!(Config::from_toml(text).is_err());
+}
+
 /// Given a config listing the same route id twice,
 /// when it is parsed,
 /// then parsing fails naming the duplicate id.

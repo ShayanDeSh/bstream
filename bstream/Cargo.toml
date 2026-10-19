@@ -16,6 +16,7 @@ env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
 rdkafka = { workspace = true }
+redis = { workspace = true, features = ["tokio-comp"] }
 serde = { workspace = true, default-features = true, features = ["derive"] }
 tokio = { workspace = true, features = [
     "io-util",

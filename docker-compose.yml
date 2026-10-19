@@ -10,3 +10,12 @@ services:
       interval: 5s
       timeout: 10s
       retries: 20
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: redis-cli ping
+      interval: 5s
+      timeout: 5s
+      retries: 20
