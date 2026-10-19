@@ -24,13 +24,29 @@ subscriber_buffer = 1024    # optional; frames a subscriber may lag before it is
 
 [[routes]]
 id = 1
+kafka = { topic = "orders" }  # optional; also produce this route's payloads to Kafka
+
+[kafka]                       # required if any route has a Kafka topic
+brokers = "localhost:9092"
 ```
+
+Kafka records are keyed by the frame's `key_hash` (4 little-endian bytes), so each key stays on
+one partition, in order.
 
 A subscriber sends a `u32` little-endian route id and gets one status byte back (`0` ok,
 `1` unknown route), followed by every frame for that route.
 
 Cargo build scripts are used to automatically build the eBPF correctly and include it in the
 program.
+
+## Tests
+
+Broker integration tests are ignored by default. Start the brokers, then include them:
+
+```shell
+docker compose up -d --wait
+cargo test -- --include-ignored
+```
 
 ## License
 
