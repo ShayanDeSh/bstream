@@ -21,6 +21,7 @@ cargo run --release -- bstream.toml
 ingest = "0.0.0.0:7400"     # producers connect here
 subscribe = "0.0.0.0:7401"  # local subscribers connect here
 subscriber_buffer = 1024    # optional; frames a subscriber may lag before it is disconnected
+sink_buffer = 1024          # optional; frames queued per broker sink of each route
 
 [[routes]]
 id = 1
@@ -44,6 +45,13 @@ one partition, in order. Redis stream entries have two fields, `key_hash` (decim
 payload as the body and `key_hash` as a header, and count as delivered only once the broker
 confirms them.
 
+Each broker sink of a route has its own queue of `sink_buffer` frames. Failed writes are retried
+with exponential backoff (50 ms up to 1 s) until they succeed, so delivery is at-least-once; only
+frames the broker rejects for good (a Redis error reply, a RabbitMQ nack or return, an oversized
+Kafka record) are dropped. While a queue is full the router stops reading from producers on that
+route, so TCP slows them down instead of the router buffering without limit. Local subscribers
+never block ingest.
+
 A subscriber sends a `u32` little-endian route id and gets one status byte back (`0` ok,
 `1` unknown route), followed by every frame for that route.
 
@@ -58,6 +66,8 @@ Broker integration tests are ignored by default. Start the brokers, then include
 docker compose up -d --wait
 cargo test -- --include-ignored
 ```
+
+`tests/outage.rs` stops and restarts the Redis container with `docker compose`.
 
 ## License
 

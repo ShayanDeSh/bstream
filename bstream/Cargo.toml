@@ -16,7 +16,7 @@ env_logger = { workspace = true }
 lapin = { workspace = true, features = ["tokio"] }
 libc = { workspace = true }
 log = { workspace = true }
-rdkafka = { workspace = true }
+rdkafka = { workspace = true, features = ["tokio"] }
 redis = { workspace = true, features = ["tokio-comp"] }
 serde = { workspace = true, default-features = true, features = ["derive"] }
 tokio = { workspace = true, features = [
@@ -27,13 +27,13 @@ tokio = { workspace = true, features = [
     "net",
     "signal",
     "sync",
+    "time",
 ] }
 toml = { workspace = true, default-features = true }
 
 [dev-dependencies]
 bstream-client = { path = "../bstream-client" }
-rdkafka = { workspace = true, features = ["tokio"] }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["process"] }
 
 [build-dependencies]
 anyhow = { workspace = true }

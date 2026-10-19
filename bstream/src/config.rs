@@ -11,6 +11,10 @@ pub struct Config {
     /// is disconnected.
     #[serde(default = "default_subscriber_buffer")]
     pub subscriber_buffer: usize,
+    /// Frames queued per broker sink of each route. While a queue is full, producers sending to
+    /// its route are not read from.
+    #[serde(default = "default_sink_buffer")]
+    pub sink_buffer: usize,
     /// Required if any route has a Kafka topic.
     pub kafka: Option<Kafka>,
     /// Required if any route has a Redis stream.
@@ -68,6 +72,10 @@ fn default_subscriber_buffer() -> usize {
     1024
 }
 
+fn default_sink_buffer() -> usize {
+    1024
+}
+
 impl Config {
     pub fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
@@ -82,6 +90,7 @@ impl Config {
             config.subscriber_buffer > 0,
             "subscriber_buffer must be positive"
         );
+        ensure!(config.sink_buffer > 0, "sink_buffer must be positive");
         let mut seen = HashSet::new();
         for route in &config.routes {
             if !seen.insert(route.id) {

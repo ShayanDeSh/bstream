@@ -10,13 +10,13 @@ use bstream::{
 use bstream_client::{Client, key_hash};
 use bstream_common::frame::FrameHeader;
 use bytes::Bytes;
-use common::{READ_TIMEOUT, encode, expect_frame, read_frame, send, start, subscribe, wait_until};
+use common::{READ_TIMEOUT, encode, expect_frame, read_frame, send, start, subscribe};
 use lapin::{
     Channel, Connection, ConnectionProperties, ExchangeKind,
     options::{BasicGetOptions, ExchangeDeclareOptions, QueueBindOptions, QueueDeclareOptions},
     types::{AMQPValue, FieldTable, ShortString},
 };
-use tokio::{net::TcpListener, time::sleep};
+use tokio::time::sleep;
 
 /// Matches the port in `docker-compose.yml`; the image lets `guest` log in from other hosts.
 const URL: &str = "amqp://guest:guest@127.0.0.1:5672/%2f";
@@ -98,13 +98,6 @@ fn frame(payload: &[u8]) -> (FrameHeader, Bytes) {
         header,
         Bytes::from([&header.to_bytes()[..], payload].concat()),
     )
-}
-
-async fn wait_for_outcomes(sink: &RabbitMqSink, n: u64) {
-    wait_until(&format!("{n} confirm outcomes"), || async {
-        sink.delivered() + sink.failed() >= n
-    })
-    .await;
 }
 
 /// Given a direct exchange with a queue bound under key `k`, route 1 publishing to that exchange
@@ -200,33 +193,32 @@ async fn route_without_rabbitmq_is_not_published() {
 }
 
 /// Given a sink publishing to an existing queue through the default exchange,
-/// when three frames are published,
-/// then all three are counted as delivered once confirmed, none as failed, and the queue holds
+/// when it writes a batch of three frames,
+/// then the write returns once all three are confirmed, none are rejected, and the queue holds
 /// all three.
 #[tokio::test]
 #[ignore = "needs RabbitMQ: docker compose up -d --wait"]
-async fn confirmed_frames_count_as_delivered() {
+async fn confirmed_frames_are_not_rejected() {
     let (_connection, channel) = connect().await;
     let queue = unique("confirmed");
     declare_queue(&channel, &queue, FieldTable::default()).await;
-    let sink = RabbitMqSink::new(URL.parse().unwrap(), String::new(), queue.clone());
+    let mut sink = RabbitMqSink::new(URL.parse().unwrap(), String::new(), queue.clone());
 
-    for payload in [b"a", b"b", b"c"] {
-        let (header, frame) = frame(payload);
-        sink.publish(&header, &frame).unwrap();
-    }
+    let rejected = sink
+        .write(&[frame(b"a"), frame(b"b"), frame(b"c")])
+        .await
+        .unwrap();
 
-    wait_for_outcomes(&sink, 3).await;
-    assert_eq!((sink.delivered(), sink.failed()), (3, 0));
+    assert_eq!(rejected, 0);
     assert_eq!(message_count(&channel, &queue).await, 3);
 }
 
 /// Given a queue limited to one message that rejects publishes when full,
-/// when a sink publishes three frames to it,
-/// then the broker nacks two, so one frame counts as delivered and two as failed.
+/// when a sink writes a batch of three frames to it,
+/// then the broker nacks two, so two frames are rejected and the queue holds the first.
 #[tokio::test]
 #[ignore = "needs RabbitMQ: docker compose up -d --wait"]
-async fn nacked_frames_count_as_failed() {
+async fn nacked_frames_are_rejected() {
     let (_connection, channel) = connect().await;
     let queue = unique("full");
     let mut arguments = FieldTable::default();
@@ -236,72 +228,40 @@ async fn nacked_frames_count_as_failed() {
         AMQPValue::LongString("reject-publish".into()),
     );
     declare_queue(&channel, &queue, arguments).await;
-    let sink = RabbitMqSink::new(URL.parse().unwrap(), String::new(), queue.clone());
+    let mut sink = RabbitMqSink::new(URL.parse().unwrap(), String::new(), queue.clone());
 
-    for payload in [b"a", b"b", b"c"] {
-        let (header, frame) = frame(payload);
-        sink.publish(&header, &frame).unwrap();
-    }
+    let rejected = sink
+        .write(&[frame(b"a"), frame(b"b"), frame(b"c")])
+        .await
+        .unwrap();
 
-    wait_for_outcomes(&sink, 3).await;
-    assert_eq!((sink.delivered(), sink.failed()), (1, 2));
+    assert_eq!(rejected, 2);
     assert_eq!(get_messages(&channel, &queue, 1).await[0].1, b"a");
 }
 
 /// Given a sink whose routing key matches no queue on the default exchange,
-/// when two frames are published,
-/// then the broker returns them as unroutable and both count as failed.
+/// when it writes a batch of two frames,
+/// then the broker returns them as unroutable and both are rejected.
 #[tokio::test]
 #[ignore = "needs RabbitMQ: docker compose up -d --wait"]
-async fn unroutable_frames_count_as_failed() {
-    let sink = RabbitMqSink::new(URL.parse().unwrap(), String::new(), unique("no-such-queue"));
+async fn unroutable_frames_are_rejected() {
+    let mut sink = RabbitMqSink::new(URL.parse().unwrap(), String::new(), unique("no-such-queue"));
 
-    for payload in [b"a", b"b"] {
-        let (header, frame) = frame(payload);
-        sink.publish(&header, &frame).unwrap();
-    }
+    let rejected = sink.write(&[frame(b"a"), frame(b"b")]).await.unwrap();
 
-    wait_for_outcomes(&sink, 2).await;
-    assert_eq!((sink.delivered(), sink.failed()), (0, 2));
+    assert_eq!(rejected, 2);
 }
 
 /// Given a sink pointed at an address where nothing listens,
-/// when two frames are published,
-/// then both count as failed.
+/// when it writes a frame,
+/// then the write fails with an error naming the target, so the queue retries it.
 #[tokio::test]
-async fn unreachable_broker_frames_count_as_failed() {
+async fn unreachable_broker_write_fails_for_retry() {
     let uri = "amqp://guest:guest@127.0.0.1:1/%2f".parse().unwrap();
-    let sink = RabbitMqSink::new(uri, String::new(), "q".into());
+    let mut sink = RabbitMqSink::new(uri, String::new(), "q".into());
 
-    for payload in [b"a", b"b"] {
-        let (header, frame) = frame(payload);
-        sink.publish(&header, &frame).unwrap();
-    }
+    let err = sink.write(&[frame(b"a")]).await.unwrap_err();
 
-    wait_for_outcomes(&sink, 2).await;
-    assert_eq!((sink.delivered(), sink.failed()), (0, 2));
-}
-
-/// Given a sink pointed at a listener that accepts connections but never replies,
-/// when 2000 frames are published to it back to back,
-/// then the first publishes succeed and later ones fail with a full-queue error instead of
-/// blocking.
-#[tokio::test]
-async fn full_queue_drops_frames_without_blocking() {
-    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let uri = format!("amqp://{}/%2f", silent.local_addr().unwrap())
-        .parse()
-        .unwrap();
-    let sink = RabbitMqSink::new(uri, String::new(), "q".into());
-    let (header, frame) = frame(b"x");
-
-    let results: Vec<_> = (0..2000).map(|_| sink.publish(&header, &frame)).collect();
-
-    assert!(results[0].is_ok());
-    let err = results
-        .iter()
-        .find_map(|result| result.as_ref().err())
-        .expect("every publish succeeded");
     assert!(err.to_string().contains("rabbitmq"), "{err}");
 }
 

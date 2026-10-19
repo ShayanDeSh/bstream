@@ -1,6 +1,9 @@
 // Each test crate uses a different subset of these helpers.
 #![allow(dead_code)]
 
+pub mod kafka;
+pub mod redis_streams;
+
 use std::{
     io::ErrorKind,
     net::SocketAddr,

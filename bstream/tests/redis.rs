@@ -1,86 +1,37 @@
 mod common;
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use bstream::{
     Router,
     config::Config,
-    sinks::{Sink as _, redis::RedisSink},
+    sinks::{BATCH_LEN, Sink as _, SinkKind, redis::RedisSink},
 };
 use bstream_client::{Client, key_hash};
 use bstream_common::frame::FrameHeader;
 use bytes::Bytes;
-use common::{encode, expect_frame, read_frame, send, start, subscribe, wait_until};
-use redis::{AsyncCommands as _, aio::MultiplexedConnection};
-use tokio::net::TcpListener;
-
-/// Matches the port in `docker-compose.yml`.
-const URL: &str = "redis://127.0.0.1:6379";
-
-fn unique_stream(name: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    format!("bstream-{name}-{nanos}")
-}
+use common::{
+    encode, expect_frame, read_frame,
+    redis_streams::{URL, connect, unique_stream, wait_for_len, xrange},
+    send, start, subscribe, wait_until,
+};
+use redis::AsyncCommands as _;
+use tokio::{
+    io::AsyncWriteExt as _,
+    net::{TcpListener, TcpStream},
+    time::sleep,
+};
 
 fn redis_config(routes: &str) -> String {
     format!("routes = [{routes}]\n[redis]\nurl = \"{URL}\"")
 }
 
-async fn connect() -> MultiplexedConnection {
-    redis::Client::open(URL)
-        .unwrap()
-        .get_multiplexed_async_connection()
-        .await
-        .unwrap()
-}
-
-async fn wait_for_len(conn: &MultiplexedConnection, stream: &str, len: usize) {
-    wait_until(&format!("{len} entries in {stream}"), || async {
-        let actual: usize = redis::cmd("XLEN")
-            .arg(stream)
-            .query_async(&mut conn.clone())
-            .await
-            .unwrap();
-        actual >= len
-    })
-    .await;
-}
-
-/// An XRANGE entry: its id and its field/value pairs.
-type StreamEntry = (String, Vec<(String, Vec<u8>)>);
-
-/// Returns `(key_hash, payload)` for every entry, oldest first.
-async fn xrange(conn: &mut MultiplexedConnection, stream: &str) -> Vec<(u32, Vec<u8>)> {
-    let entries: Vec<StreamEntry> = redis::cmd("XRANGE")
-        .arg(stream)
-        .arg("-")
-        .arg("+")
-        .query_async(conn)
-        .await
-        .unwrap();
-    entries
-        .into_iter()
-        .map(|(_, fields)| {
-            let [(k, key_hash), (p, payload)] = <[_; 2]>::try_from(fields).unwrap();
-            assert_eq!((k.as_str(), p.as_str()), ("key_hash", "payload"));
-            let key_hash = String::from_utf8(key_hash).unwrap().parse().unwrap();
-            (key_hash, payload)
-        })
-        .collect()
-}
-
-async fn wrongtype_errors(conn: &mut MultiplexedConnection) -> u64 {
-    let info: String = redis::cmd("INFO")
-        .arg("errorstats")
-        .query_async(conn)
-        .await
-        .unwrap();
-    info.lines()
-        .find_map(|line| line.strip_prefix("errorstat_WRONGTYPE:count="))
-        .map_or(0, |count| count.parse().unwrap())
+fn frame(payload: &[u8]) -> (FrameHeader, Bytes) {
+    let header = FrameHeader::new(1, key_hash(b"key"), payload.len()).unwrap();
+    (
+        header,
+        Bytes::from([&header.to_bytes()[..], payload].concat()),
+    )
 }
 
 /// Given route 1 writing to a Redis stream and a local subscriber on route 1,
@@ -151,7 +102,8 @@ async fn route_without_stream_is_not_written() {
 
 /// Given route 1's stream key already holding a plain string, so XADD fails with WRONGTYPE,
 /// when a frame is published, the key is then deleted, and a second frame is published,
-/// then the first frame is dropped and the sink recovers to append the second.
+/// then the first frame counts as failed without a retry and the sink recovers to append the
+/// second.
 #[tokio::test]
 #[ignore = "needs Redis: docker compose up -d --wait"]
 async fn failed_write_does_not_stop_later_frames() {
@@ -162,14 +114,10 @@ async fn failed_write_does_not_stop_later_frames() {
         "{{ id = 1, redis = {{ stream = \"{stream}\" }} }}"
     )))
     .await;
-    let errors_before = wrongtype_errors(&mut conn).await;
+    let redis = router.stats.sink(1, SinkKind::Redis).unwrap();
 
     send(router.ingest, &encode(&[(1, b"dropped")])).await;
-    wait_until("the XADD to fail with WRONGTYPE", || {
-        let mut conn = conn.clone();
-        async move { wrongtype_errors(&mut conn).await > errors_before }
-    })
-    .await;
+    wait_until("the XADD to fail", || async { redis.failed() == 1 }).await;
     let _: () = conn.del(&stream).await.unwrap();
     send(router.ingest, &encode(&[(1, b"delivered")])).await;
 
@@ -177,28 +125,76 @@ async fn failed_write_does_not_stop_later_frames() {
     let entries = xrange(&mut conn, &stream).await;
     let payloads: Vec<_> = entries.iter().map(|(_, payload)| &payload[..]).collect();
     assert_eq!(payloads, [b"delivered"]);
+    assert_eq!(redis.retries(), 0);
 }
 
-/// Given a Redis sink pointed at a listener that accepts connections but never replies,
-/// when 2000 frames are published to it back to back,
-/// then the first publishes succeed and later ones fail with a full-queue error instead of
-/// blocking.
+/// Given a stream key holding a plain string,
+/// when a Redis sink writes a batch of two frames to it,
+/// then the write returns with both frames rejected, since retrying cannot fix WRONGTYPE.
 #[tokio::test]
-async fn full_queue_drops_frames_without_blocking() {
-    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("redis://{}", silent.local_addr().unwrap());
-    let sink = RedisSink::new(redis::Client::open(url).unwrap(), "s".into());
-    let header = FrameHeader::new(1, 0, 1).unwrap();
-    let frame = Bytes::from([&header.to_bytes()[..], b"x"].concat());
+#[ignore = "needs Redis: docker compose up -d --wait"]
+async fn wrongtype_rejects_batch() {
+    let stream = unique_stream("wrongtype-sink");
+    let mut conn = connect().await;
+    let _: () = conn.set(&stream, "not a stream").await.unwrap();
+    let mut sink = RedisSink::new(redis::Client::open(URL).unwrap(), stream);
 
-    let results: Vec<_> = (0..2000).map(|_| sink.publish(&header, &frame)).collect();
+    let rejected = sink.write(&[frame(b"a"), frame(b"b")]).await.unwrap();
 
-    assert!(results[0].is_ok());
-    let err = results
-        .iter()
-        .find_map(|result| result.as_ref().err())
-        .expect("every publish succeeded");
+    assert_eq!(rejected, 2);
+}
+
+/// Given a Redis sink pointed at an address where nothing listens,
+/// when it writes a frame,
+/// then the write fails with an error naming the stream, so the queue retries it.
+#[tokio::test]
+async fn unreachable_redis_write_fails_for_retry() {
+    let client = redis::Client::open("redis://127.0.0.1:1").unwrap();
+    let mut sink = RedisSink::new(client, "s".into());
+
+    let err = sink.write(&[frame(b"a")]).await.unwrap_err();
+
     assert!(err.to_string().contains("redis stream s"), "{err}");
+}
+
+/// Given sink_buffer = 4 and route 1 writing to a Redis server that accepts connections but
+/// never replies,
+/// when a producer sends 32 MB of frames to route 1,
+/// then the producer's write stalls, and the Redis sink holds a bounded number of frames that
+/// stops growing, instead of the router reading everything into memory.
+#[tokio::test]
+async fn full_sink_queue_stalls_producer() {
+    const QUEUE: u64 = 4;
+    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let router = start(&format!(
+        "sink_buffer = {QUEUE}\nroutes = [{{ id = 1, redis = {{ stream = \"s\" }} }}]\n\
+         [redis]\nurl = \"redis://{}\"",
+        silent.local_addr().unwrap()
+    ))
+    .await;
+    let redis = router.stats.sink(1, SinkKind::Redis).unwrap();
+    let mut client = Client::new(Vec::new());
+    for _ in 0..8 * 1024 {
+        client.publish(1, b"key", &[0; 4096]).unwrap();
+    }
+    let bytes = client.into_inner();
+    let mut producer = TcpStream::connect(router.ingest).await.unwrap();
+    let writer = tokio::spawn(async move { producer.write_all(&bytes).await });
+
+    wait_until("the redis queue to fill", || async {
+        redis.pending() >= QUEUE
+    })
+    .await;
+    let pending = redis.pending();
+    sleep(Duration::from_secs(1)).await;
+
+    assert!(!writer.is_finished(), "producer wrote all 32 MB");
+    assert_eq!(redis.pending(), pending, "router kept reading");
+    assert!(
+        pending <= QUEUE + BATCH_LEN as u64,
+        "{pending} frames pending"
+    );
+    assert_eq!(redis.delivered(), 0);
 }
 
 /// Given a config whose Redis URL is not a valid redis:// URL,

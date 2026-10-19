@@ -2,87 +2,33 @@ mod common;
 
 use std::{
     collections::{HashMap, HashSet},
-    time::{SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
+use bstream::sinks::{
+    Sink as _,
+    kafka::{self, KafkaSink},
+};
 use bstream_client::{Client, key_hash};
-use common::{READ_TIMEOUT, encode, expect_frame, read_frame, send, start, subscribe};
-use rdkafka::{
-    ClientConfig, Message as _, Offset, TopicPartitionList,
-    admin::{AdminClient, AdminOptions, NewTopic, TopicReplication},
-    client::DefaultClientContext,
-    consumer::{Consumer as _, StreamConsumer},
+use bstream_common::frame::{FrameHeader, MAX_PAYLOAD_LEN};
+use bytes::Bytes;
+use common::{
+    encode, expect_frame,
+    kafka::{BROKERS, consume, create_topic, next_record},
+    read_frame, send, start, subscribe,
 };
 use tokio::time::timeout;
-
-/// Matches the listener in `docker-compose.yml`.
-const BROKERS: &str = "127.0.0.1:9092";
-
-async fn create_topic(name: &str, partitions: i32) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let topic = format!("bstream-{name}-{nanos}");
-    let admin: AdminClient<DefaultClientContext> = ClientConfig::new()
-        .set("bootstrap.servers", BROKERS)
-        .create()
-        .unwrap();
-    let results = admin
-        .create_topics(
-            &[NewTopic::new(
-                &topic,
-                partitions,
-                TopicReplication::Fixed(1),
-            )],
-            &AdminOptions::new().operation_timeout(Some(READ_TIMEOUT)),
-        )
-        .await
-        .unwrap();
-    for result in results {
-        result.unwrap();
-    }
-    topic
-}
 
 fn kafka_config(routes: &str) -> String {
     format!("routes = [{routes}]\n[kafka]\nbrokers = \"{BROKERS}\"")
 }
 
-/// Reads every partition from the beginning, without a consumer group rebalance.
-fn consume(topic: &str, partitions: i32) -> StreamConsumer {
-    let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", BROKERS)
-        .set("group.id", "bstream-tests")
-        .set("enable.auto.commit", "false")
-        .create()
-        .unwrap();
-    let mut assignment = TopicPartitionList::new();
-    for partition in 0..partitions {
-        assignment
-            .add_partition_offset(topic, partition, Offset::Beginning)
-            .unwrap();
-    }
-    consumer.assign(&assignment).unwrap();
-    consumer
-}
-
-struct Record {
-    partition: i32,
-    key: Vec<u8>,
-    payload: Vec<u8>,
-}
-
-async fn next_record(consumer: &StreamConsumer) -> Record {
-    let message = timeout(READ_TIMEOUT, consumer.recv())
-        .await
-        .expect("no kafka record before timeout")
-        .unwrap();
-    Record {
-        partition: message.partition(),
-        key: message.key().unwrap_or_default().to_vec(),
-        payload: message.payload().unwrap_or_default().to_vec(),
-    }
+fn frame(payload: &[u8]) -> (FrameHeader, Bytes) {
+    let header = FrameHeader::new(1, key_hash(b"key"), payload.len()).unwrap();
+    (
+        header,
+        Bytes::from([&header.to_bytes()[..], payload].concat()),
+    )
 }
 
 /// Given a 3-partition topic, route 1 sending to it, and a local subscriber on route 1,
@@ -175,4 +121,40 @@ async fn unreachable_kafka_does_not_block_local_delivery() {
     expect_frame(&mut subscriber, 1, b"a").await;
     expect_frame(&mut subscriber, 1, b"b").await;
     assert_eq!(router.stats.unknown_route(), 0);
+}
+
+/// Given a Kafka sink pointed at an address where no broker listens,
+/// when it writes one frame,
+/// then the write is still waiting two seconds later instead of rejecting the frame, since
+/// librdkafka retries it without a deadline.
+#[tokio::test]
+async fn unreachable_broker_write_keeps_waiting() {
+    let mut sink = KafkaSink::new(kafka::producer("127.0.0.1:1").unwrap(), "t".into());
+
+    let batch = [frame(b"a")];
+
+    assert!(
+        timeout(Duration::from_secs(2), sink.write(&batch))
+            .await
+            .is_err(),
+        "write returned while the broker was unreachable"
+    );
+}
+
+/// Given a Kafka sink, whose broker need not be reachable,
+/// when it writes one frame whose payload exceeds librdkafka's default `message.max.bytes`,
+/// then the write returns at once with that frame rejected, not retried.
+#[tokio::test]
+async fn oversized_record_is_rejected() {
+    let mut sink = KafkaSink::new(kafka::producer("127.0.0.1:1").unwrap(), "t".into());
+
+    let rejected = timeout(
+        Duration::from_secs(2),
+        sink.write(&[frame(&vec![0; MAX_PAYLOAD_LEN])]),
+    )
+    .await
+    .expect("write did not return")
+    .unwrap();
+
+    assert_eq!(rejected, 1);
 }

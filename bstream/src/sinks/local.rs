@@ -17,8 +17,6 @@ use tokio::{
     sync::broadcast::{self, error::RecvError},
 };
 
-use crate::sinks::Sink;
-
 pub const SUBSCRIBE_OK: u8 = 0;
 pub const SUBSCRIBE_UNKNOWN_ROUTE: u8 = 1;
 
@@ -65,10 +63,9 @@ impl LocalSink {
             }
         }
     }
-}
 
-impl Sink for LocalSink {
-    fn publish(&self, header: &FrameHeader, frame: &Bytes) -> anyhow::Result<()> {
+    /// Never blocks: a subscriber that falls behind is disconnected instead of slowing ingest.
+    pub fn publish(&self, header: &FrameHeader, frame: &Bytes) -> anyhow::Result<()> {
         let tx = self
             .routes
             .get(&header.route_id)

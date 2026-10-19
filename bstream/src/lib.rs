@@ -2,7 +2,7 @@ pub mod config;
 pub mod ingest;
 pub mod sinks;
 
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, io, net::SocketAddr, sync::Arc};
 
 use anyhow::anyhow;
 use lapin::uri::AMQPUri;
@@ -12,7 +12,7 @@ use crate::{
     config::Config,
     ingest::{Routes, Stats},
     sinks::{
-        Sink,
+        Queue, SinkKind,
         kafka::{self, KafkaSink},
         local::LocalSink,
         rabbitmq::RabbitMqSink,
@@ -50,31 +50,51 @@ impl Router {
             .map(|rabbitmq| rabbitmq.url.parse::<AMQPUri>())
             .transpose()
             .map_err(|e| anyhow!("rabbitmq url: {e}"))?;
+        let mut metrics = HashMap::new();
         let routes = config
             .routes
             .iter()
             .map(|route| {
-                let mut sinks: Vec<Arc<dyn Sink>> = vec![local.clone()];
+                let name = |target: String| format!("route {} {target}", route.id);
+                let mut queues = Vec::new();
                 if let (Some(kafka), Some(producer)) = (&route.kafka, &producer) {
-                    sinks.push(Arc::new(KafkaSink::new(
-                        Arc::clone(producer),
-                        kafka.topic.clone(),
-                    )));
+                    let sink = KafkaSink::new(producer.clone(), kafka.topic.clone());
+                    let name = name(format!("kafka topic {:?}", kafka.topic));
+                    queues.push((
+                        SinkKind::Kafka,
+                        Queue::spawn(name, sink, config.sink_buffer),
+                    ));
                 }
                 if let (Some(redis_route), Some(client)) = (&route.redis, &redis) {
-                    sinks.push(Arc::new(RedisSink::new(
-                        client.clone(),
-                        redis_route.stream.clone(),
-                    )));
+                    let sink = RedisSink::new(client.clone(), redis_route.stream.clone());
+                    let name = name(format!("redis stream {:?}", redis_route.stream));
+                    queues.push((
+                        SinkKind::Redis,
+                        Queue::spawn(name, sink, config.sink_buffer),
+                    ));
                 }
                 if let (Some(rabbitmq_route), Some(uri)) = (&route.rabbitmq, &amqp_uri) {
-                    sinks.push(Arc::new(RabbitMqSink::new(
+                    let sink = RabbitMqSink::new(
                         uri.clone(),
                         rabbitmq_route.exchange.clone(),
                         rabbitmq_route.routing_key.clone(),
-                    )));
+                    );
+                    let name = name(format!(
+                        "rabbitmq exchange {:?} key {:?}",
+                        rabbitmq_route.exchange, rabbitmq_route.routing_key
+                    ));
+                    queues.push((
+                        SinkKind::RabbitMq,
+                        Queue::spawn(name, sink, config.sink_buffer),
+                    ));
                 }
-                (route.id, sinks)
+                for (kind, queue) in &queues {
+                    metrics.insert((route.id, *kind), queue.metrics());
+                }
+                (
+                    route.id,
+                    queues.into_iter().map(|(_, queue)| queue).collect(),
+                )
             })
             .collect();
         Ok(Self {
@@ -82,7 +102,7 @@ impl Router {
             subscribe: TcpListener::bind(config.subscribe).await?,
             local,
             routes: Arc::new(routes),
-            stats: Arc::default(),
+            stats: Arc::new(Stats::new(metrics)),
         })
     }
 
@@ -100,7 +120,12 @@ impl Router {
 
     pub async fn run(self) -> anyhow::Result<()> {
         tokio::try_join!(
-            ingest::serve(self.ingest, self.routes, self.stats),
+            ingest::serve(
+                self.ingest,
+                Arc::clone(&self.local),
+                self.routes,
+                self.stats
+            ),
             self.local.serve(self.subscribe),
         )?;
         Ok(())
