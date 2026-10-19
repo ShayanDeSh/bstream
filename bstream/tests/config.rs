@@ -47,6 +47,55 @@ fn explicit_buffer_and_empty_routes() {
     assert!(config.routes.is_empty());
 }
 
+/// Given a config with a [kafka] section and one of two routes naming a topic,
+/// when it is parsed,
+/// then the brokers are read and only that route has a Kafka topic.
+#[test]
+fn parses_kafka_brokers_and_route_topic() {
+    let config = Config::from_toml(
+        r#"
+        ingest = "127.0.0.1:0"
+        subscribe = "127.0.0.1:0"
+        routes = [{ id = 1, kafka = { topic = "orders" } }, { id = 2 }]
+
+        [kafka]
+        brokers = "a:9092,b:9092"
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(config.kafka.unwrap().brokers, "a:9092,b:9092");
+    assert_eq!(config.routes[0].kafka.as_ref().unwrap().topic, "orders");
+    assert!(config.routes[1].kafka.is_none());
+}
+
+/// Given a route with a Kafka topic and no [kafka] section,
+/// when it is parsed,
+/// then parsing fails naming the route.
+#[test]
+fn kafka_route_without_kafka_section_is_rejected() {
+    let err = Config::from_toml(
+        r#"
+        ingest = "127.0.0.1:0"
+        subscribe = "127.0.0.1:0"
+        routes = [{ id = 4, kafka = { topic = "orders" } }]
+        "#,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("route 4"), "{err}");
+}
+
+/// Given a [kafka] section without brokers,
+/// when it is parsed,
+/// then parsing fails.
+#[test]
+fn kafka_section_without_brokers_is_rejected() {
+    let text = "ingest = \"127.0.0.1:0\"\nsubscribe = \"127.0.0.1:0\"\nroutes = []\n[kafka]";
+
+    assert!(Config::from_toml(text).is_err());
+}
+
 /// Given a config listing the same route id twice,
 /// when it is parsed,
 /// then parsing fails naming the duplicate id.

@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::bail;
@@ -12,7 +15,10 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::sinks::local::LocalSink;
+use crate::sinks::Sink;
+
+/// Sinks for each configured route id. A frame whose route is missing is counted and dropped.
+pub type Routes = HashMap<u32, Vec<Arc<dyn Sink>>>;
 
 #[derive(Default)]
 pub struct Stats {
@@ -27,15 +33,15 @@ impl Stats {
 
 pub async fn serve(
     listener: TcpListener,
-    local: Arc<LocalSink>,
+    routes: Arc<Routes>,
     stats: Arc<Stats>,
 ) -> anyhow::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
-        let local = Arc::clone(&local);
+        let routes = Arc::clone(&routes);
         let stats = Arc::clone(&stats);
         tokio::spawn(async move {
-            if let Err(e) = read_frames(stream, &local, &stats).await {
+            if let Err(e) = read_frames(stream, &routes, &stats).await {
                 warn!("producer {peer}: {e:#}");
             }
         });
@@ -44,17 +50,19 @@ pub async fn serve(
 
 /// Reads frames until the producer disconnects. A malformed header ends the connection, since
 /// the stream can no longer be split into frames.
-async fn read_frames(
-    mut stream: TcpStream,
-    local: &LocalSink,
-    stats: &Stats,
-) -> anyhow::Result<()> {
+async fn read_frames(mut stream: TcpStream, routes: &Routes, stats: &Stats) -> anyhow::Result<()> {
     let mut buf = BytesMut::new();
     loop {
         while let Some((header, _)) = frame::decode(&buf)? {
             let frame = buf.split_to(header.frame_len()).freeze();
-            if !local.publish(header.route_id, frame) {
+            let Some(sinks) = routes.get(&header.route_id) else {
                 stats.unknown_route.fetch_add(1, Ordering::Relaxed);
+                continue;
+            };
+            for sink in sinks {
+                if let Err(e) = sink.publish(&header, &frame) {
+                    warn!("route {}: {e:#}", header.route_id);
+                }
             }
         }
         if stream.read_buf(&mut buf).await? == 0 {

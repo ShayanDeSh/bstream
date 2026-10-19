@@ -7,7 +7,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::bail;
+use anyhow::{Context as _, bail};
+use bstream_common::frame::FrameHeader;
 use bytes::Bytes;
 use log::warn;
 use tokio::{
@@ -15,6 +16,8 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::broadcast::{self, error::RecvError},
 };
+
+use crate::sinks::Sink;
 
 pub const SUBSCRIBE_OK: u8 = 0;
 pub const SUBSCRIBE_UNKNOWN_ROUTE: u8 = 1;
@@ -30,16 +33,6 @@ impl LocalSink {
             .map(|id| (id, broadcast::channel(buffer).0))
             .collect();
         Self { routes }
-    }
-
-    /// Returns `false` if `route_id` is not configured.
-    pub fn publish(&self, route_id: u32, frame: Bytes) -> bool {
-        let Some(tx) = self.routes.get(&route_id) else {
-            return false;
-        };
-        // Sending fails only when the route has no subscribers.
-        let _ = tx.send(frame);
-        true
     }
 
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
@@ -71,5 +64,17 @@ impl LocalSink {
                 Err(RecvError::Closed) => return Ok(()),
             }
         }
+    }
+}
+
+impl Sink for LocalSink {
+    fn publish(&self, header: &FrameHeader, frame: &Bytes) -> anyhow::Result<()> {
+        let tx = self
+            .routes
+            .get(&header.route_id)
+            .with_context(|| format!("no local channel for route {}", header.route_id))?;
+        // Sending fails only when the route has no subscribers.
+        let _ = tx.send(frame.clone());
+        Ok(())
     }
 }

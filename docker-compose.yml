@@ -1,0 +1,12 @@
+# Brokers for the integration tests: `docker compose up -d --wait`.
+services:
+  kafka:
+    # The image's default config is a single KRaft node advertising localhost:9092.
+    image: apache/kafka:4.1.0
+    ports:
+      - "9092:9092"
+    healthcheck:
+      test: /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092
+      interval: 5s
+      timeout: 10s
+      retries: 20

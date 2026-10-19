@@ -11,12 +11,26 @@ pub struct Config {
     /// is disconnected.
     #[serde(default = "default_subscriber_buffer")]
     pub subscriber_buffer: usize,
+    /// Required if any route has a Kafka topic.
+    pub kafka: Option<Kafka>,
     pub routes: Vec<Route>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Kafka {
+    /// Comma-separated `host:port` list, passed to librdkafka as `bootstrap.servers`.
+    pub brokers: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Route {
     pub id: u32,
+    pub kafka: Option<KafkaRoute>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KafkaRoute {
+    pub topic: String,
 }
 
 fn default_subscriber_buffer() -> usize {
@@ -42,6 +56,11 @@ impl Config {
             if !seen.insert(route.id) {
                 bail!("duplicate route id {}", route.id);
             }
+            ensure!(
+                route.kafka.is_none() || config.kafka.is_some(),
+                "route {} has a kafka topic but there is no [kafka] section",
+                route.id
+            );
         }
         Ok(config)
     }
