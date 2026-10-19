@@ -15,7 +15,10 @@ use tokio::{
     net::{TcpListener, TcpStream},
 };
 
-use crate::sinks::{Metrics, Queue, SinkKind, local::LocalSink};
+use crate::{
+    ebpf::KernelFilter,
+    sinks::{Metrics, Queue, SinkKind, local::LocalSink},
+};
 
 /// Broker sink queues for each configured route id. A frame whose route is missing is counted
 /// and dropped.
@@ -48,9 +51,16 @@ pub async fn serve(
     local: Arc<LocalSink>,
     routes: Arc<Routes>,
     stats: Arc<Stats>,
+    filter: Option<Arc<KernelFilter>>,
 ) -> anyhow::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
+        // Register before reading so the kernel frames and filters the stream from its first byte.
+        if let Some(filter) = &filter
+            && let Err(e) = filter.register_producer(&stream)
+        {
+            warn!("producer {peer}: not filtered in kernel: {e:#}");
+        }
         let local = Arc::clone(&local);
         let routes = Arc::clone(&routes);
         let stats = Arc::clone(&stats);

@@ -7,7 +7,6 @@ edition.workspace = true
 bstream-common = { path = "../bstream-common" }
 
 aya-ebpf = { workspace = true }
-aya-log-ebpf = { workspace = true }
 
 [build-dependencies]
 which = { workspace = true }

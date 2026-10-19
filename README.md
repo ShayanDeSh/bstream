@@ -22,6 +22,7 @@ ingest = "0.0.0.0:7400"     # producers connect here
 subscribe = "0.0.0.0:7401"  # local subscribers connect here
 subscriber_buffer = 1024    # optional; frames a subscriber may lag before it is disconnected
 sink_buffer = 1024          # optional; frames queued per broker sink of each route
+ebpf = false                # optional; filter unknown routes in the kernel (needs CAP_BPF)
 
 [[routes]]
 id = 1
@@ -55,6 +56,13 @@ never block ingest.
 A subscriber sends a `u32` little-endian route id and gets one status byte back (`0` ok,
 `1` unknown route), followed by every frame for that route.
 
+With `ebpf = true`, an eBPF stream parser and verdict attach to a `SOCKHASH` holding every accepted
+producer socket. The parser splits the TCP stream into frames by the header length, and the verdict
+drops frames whose `route_id` is not configured, counting them in a kernel map, so unknown routes
+never reach user space. Frames for configured routes pass up unchanged and are fanned out as usual.
+Loading eBPF needs `CAP_BPF` (in practice, root); when `ebpf = false` (the default) the router runs
+unprivileged and filters unknown routes in user space instead.
+
 Cargo build scripts are used to automatically build the eBPF correctly and include it in the
 program.
 
@@ -68,6 +76,12 @@ cargo test -- --include-ignored
 ```
 
 `tests/outage.rs` stops and restarts the Redis container with `docker compose`.
+
+The eBPF tests in `tests/ebpf.rs` load kernel programs, so they are ignored unless run as root:
+
+```shell
+sudo -E cargo test -p bstream --test ebpf -- --include-ignored
+```
 
 ## License
 

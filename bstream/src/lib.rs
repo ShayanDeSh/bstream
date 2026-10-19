@@ -1,4 +1,5 @@
 pub mod config;
+pub mod ebpf;
 pub mod ingest;
 pub mod sinks;
 
@@ -10,6 +11,7 @@ use tokio::net::TcpListener;
 
 use crate::{
     config::Config,
+    ebpf::KernelFilter,
     ingest::{Routes, Stats},
     sinks::{
         Queue, SinkKind,
@@ -26,6 +28,7 @@ pub struct Router {
     local: Arc<LocalSink>,
     routes: Arc<Routes>,
     stats: Arc<Stats>,
+    filter: Option<Arc<KernelFilter>>,
 }
 
 impl Router {
@@ -97,13 +100,22 @@ impl Router {
                 )
             })
             .collect();
+        let filter = config
+            .ebpf
+            .then(|| KernelFilter::load(config.routes.iter().map(|route| route.id)).map(Arc::new))
+            .transpose()?;
         Ok(Self {
             ingest: TcpListener::bind(config.ingest).await?,
             subscribe: TcpListener::bind(config.subscribe).await?,
             local,
             routes: Arc::new(routes),
             stats: Arc::new(Stats::new(metrics)),
+            filter,
         })
+    }
+
+    pub fn filter(&self) -> Option<Arc<KernelFilter>> {
+        self.filter.clone()
     }
 
     pub fn ingest_addr(&self) -> io::Result<SocketAddr> {
@@ -124,7 +136,8 @@ impl Router {
                 self.ingest,
                 Arc::clone(&self.local),
                 self.routes,
-                self.stats
+                self.stats,
+                self.filter,
             ),
             self.local.serve(self.subscribe),
         )?;

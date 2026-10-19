@@ -15,6 +15,10 @@ pub struct Config {
     /// its route are not read from.
     #[serde(default = "default_sink_buffer")]
     pub sink_buffer: usize,
+    /// Filter unknown routes in the kernel with eBPF. Needs `CAP_BPF`; off by default so the
+    /// router runs unprivileged.
+    #[serde(default)]
+    pub ebpf: bool,
     /// Required if any route has a Kafka topic.
     pub kafka: Option<Kafka>,
     /// Required if any route has a Redis stream.

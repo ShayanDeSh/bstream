@@ -8,6 +8,8 @@ use core::fmt;
 pub const MAGIC: u16 = 0xB57E;
 pub const VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 16;
+/// Byte offset of `route_id`, read directly by the eBPF stream verdict.
+pub const ROUTE_ID_OFFSET: usize = 4;
 /// Byte offset of `payload_len`, read directly by the eBPF stream parser.
 pub const PAYLOAD_LEN_OFFSET: usize = 12;
 /// Upper bound on payload size, so a corrupt or hostile header cannot make the router buffer

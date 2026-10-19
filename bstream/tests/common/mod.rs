@@ -11,7 +11,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use bstream::{Router, config::Config, ingest::Stats, sinks::local::SUBSCRIBE_OK};
+use bstream::{
+    Router, config::Config, ebpf::KernelFilter, ingest::Stats, sinks::local::SUBSCRIBE_OK,
+};
 use bstream_client::Client;
 use bstream_common::frame::{FrameHeader, HEADER_LEN};
 use tokio::{
@@ -26,6 +28,7 @@ pub struct TestRouter {
     pub ingest: SocketAddr,
     pub subscribe: SocketAddr,
     pub stats: Arc<Stats>,
+    pub filter: Option<Arc<KernelFilter>>,
 }
 
 pub async fn start(extra_config: &str) -> TestRouter {
@@ -38,6 +41,7 @@ pub async fn start(extra_config: &str) -> TestRouter {
         ingest: router.ingest_addr().unwrap(),
         subscribe: router.subscribe_addr().unwrap(),
         stats: router.stats(),
+        filter: router.filter(),
     };
     tokio::spawn(router.run());
     test_router
