@@ -10,11 +10,24 @@
 
 ## Build & Run
 
-Use `cargo build`, `cargo check`, etc. as normal. Run your program with:
+Use `cargo build`, `cargo check`, etc. as normal. Run the router with a config file (default
+`bstream.toml`):
 
 ```shell
-cargo run --release
+cargo run --release -- bstream.toml
 ```
+
+```toml
+ingest = "0.0.0.0:7400"     # producers connect here
+subscribe = "0.0.0.0:7401"  # local subscribers connect here
+subscriber_buffer = 1024    # optional; frames a subscriber may lag before it is disconnected
+
+[[routes]]
+id = 1
+```
+
+A subscriber sends a `u32` little-endian route id and gets one status byte back (`0` ok,
+`1` unknown route), followed by every frame for that route.
 
 Cargo build scripts are used to automatically build the eBPF correctly and include it in the
 program.

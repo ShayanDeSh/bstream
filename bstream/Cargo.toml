@@ -11,16 +11,26 @@ bstream-common = { path = "../bstream-common", features = ["user"] }
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
 aya-log = { workspace = true }
+bytes = { workspace = true, default-features = true }
 env_logger = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
+serde = { workspace = true, default-features = true, features = ["derive"] }
 tokio = { workspace = true, features = [
+    "io-util",
     "macros",
     "rt",
     "rt-multi-thread",
     "net",
     "signal",
+    "sync",
 ] }
+toml = { workspace = true, default-features = true }
+
+[dev-dependencies]
+bstream-client = { path = "../bstream-client" }
+tokio = { workspace = true, features = ["time"] }
+
 [build-dependencies]
 anyhow = { workspace = true }
 aya-build = { workspace = true }
