@@ -4,6 +4,8 @@ pub mod sinks;
 
 use std::{io, net::SocketAddr, sync::Arc};
 
+use anyhow::anyhow;
+use lapin::uri::AMQPUri;
 use tokio::net::TcpListener;
 
 use crate::{
@@ -13,6 +15,7 @@ use crate::{
         Sink,
         kafka::{self, KafkaSink},
         local::LocalSink,
+        rabbitmq::RabbitMqSink,
         redis::RedisSink,
     },
 };
@@ -41,6 +44,12 @@ impl Router {
             .as_ref()
             .map(|redis| redis::Client::open(redis.url.as_str()))
             .transpose()?;
+        let amqp_uri = config
+            .rabbitmq
+            .as_ref()
+            .map(|rabbitmq| rabbitmq.url.parse::<AMQPUri>())
+            .transpose()
+            .map_err(|e| anyhow!("rabbitmq url: {e}"))?;
         let routes = config
             .routes
             .iter()
@@ -56,6 +65,13 @@ impl Router {
                     sinks.push(Arc::new(RedisSink::new(
                         client.clone(),
                         redis_route.stream.clone(),
+                    )));
+                }
+                if let (Some(rabbitmq_route), Some(uri)) = (&route.rabbitmq, &amqp_uri) {
+                    sinks.push(Arc::new(RabbitMqSink::new(
+                        uri.clone(),
+                        rabbitmq_route.exchange.clone(),
+                        rabbitmq_route.routing_key.clone(),
                     )));
                 }
                 (route.id, sinks)

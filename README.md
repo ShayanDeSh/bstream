@@ -26,17 +26,23 @@ subscriber_buffer = 1024    # optional; frames a subscriber may lag before it is
 id = 1
 kafka = { topic = "orders" }  # optional; also produce this route's payloads to Kafka
 redis = { stream = "orders" } # optional; also XADD this route's frames to a Redis stream
+rabbitmq = { exchange = "events", routing_key = "orders" } # optional; exchange defaults to ""
 
 [kafka]                       # required if any route has a Kafka topic
 brokers = "localhost:9092"
 
 [redis]                       # required if any route has a Redis stream
 url = "redis://localhost:6379"
+
+[rabbitmq]                    # required if any route has a RabbitMQ target
+url = "amqp://guest:guest@localhost:5672/%2f"
 ```
 
 Kafka records are keyed by the frame's `key_hash` (4 little-endian bytes), so each key stays on
 one partition, in order. Redis stream entries have two fields, `key_hash` (decimal) and
-`payload`, appended in ingest order.
+`payload`, appended in ingest order. RabbitMQ messages are persistent and mandatory, carry the
+payload as the body and `key_hash` as a header, and count as delivered only once the broker
+confirms them.
 
 A subscriber sends a `u32` little-endian route id and gets one status byte back (`0` ok,
 `1` unknown route), followed by every frame for that route.

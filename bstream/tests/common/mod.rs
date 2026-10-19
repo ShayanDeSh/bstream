@@ -1,7 +1,12 @@
 // Each test crate uses a different subset of these helpers.
 #![allow(dead_code)]
 
-use std::{io::ErrorKind, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    io::ErrorKind,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bstream::{Router, config::Config, ingest::Stats, sinks::local::SUBSCRIBE_OK};
 use bstream_client::Client;
@@ -9,7 +14,7 @@ use bstream_common::frame::{FrameHeader, HEADER_LEN};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
     net::TcpStream,
-    time::timeout,
+    time::{sleep, timeout},
 };
 
 pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
@@ -89,6 +94,15 @@ pub fn encode(frames: &[(u32, &[u8])]) -> Vec<u8> {
         client.publish(*route, b"key", payload).unwrap();
     }
     client.into_inner()
+}
+
+/// Polls until `done` returns true, failing the test after `READ_TIMEOUT`.
+pub async fn wait_until<F: Future<Output = bool>>(what: &str, mut done: impl FnMut() -> F) {
+    let deadline = Instant::now() + READ_TIMEOUT;
+    while !done().await {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        sleep(Duration::from_millis(20)).await;
+    }
 }
 
 pub async fn send(addr: SocketAddr, bytes: &[u8]) {

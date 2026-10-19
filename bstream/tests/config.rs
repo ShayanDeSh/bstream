@@ -145,6 +145,68 @@ fn redis_section_without_url_is_rejected() {
     assert!(Config::from_toml(text).is_err());
 }
 
+/// Given a config with a [rabbitmq] section, one route naming an exchange and routing key, and
+/// one naming only a routing key,
+/// when it is parsed,
+/// then the URL is read and the route without an exchange uses the default exchange "".
+#[test]
+fn parses_rabbitmq_url_and_route_target() {
+    let config = Config::from_toml(
+        r#"
+        ingest = "127.0.0.1:0"
+        subscribe = "127.0.0.1:0"
+        routes = [
+            { id = 1, rabbitmq = { exchange = "events", routing_key = "orders" } },
+            { id = 2, rabbitmq = { routing_key = "audit" } },
+        ]
+
+        [rabbitmq]
+        url = "amqp://mq:5672/%2f"
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(config.rabbitmq.unwrap().url, "amqp://mq:5672/%2f");
+    let targets: Vec<_> = config
+        .routes
+        .iter()
+        .map(|route| {
+            let target = route.rabbitmq.as_ref().unwrap();
+            (target.exchange.as_str(), target.routing_key.as_str())
+        })
+        .collect();
+    assert_eq!(targets, [("events", "orders"), ("", "audit")]);
+}
+
+/// Given a route with a RabbitMQ target and no [rabbitmq] section,
+/// when it is parsed,
+/// then parsing fails naming the route.
+#[test]
+fn rabbitmq_route_without_rabbitmq_section_is_rejected() {
+    let err = Config::from_toml(
+        r#"
+        ingest = "127.0.0.1:0"
+        subscribe = "127.0.0.1:0"
+        routes = [{ id = 6, rabbitmq = { routing_key = "orders" } }]
+        "#,
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("route 6"), "{err}");
+}
+
+/// Given a route with a RabbitMQ target but no routing key,
+/// when it is parsed,
+/// then parsing fails.
+#[test]
+fn rabbitmq_route_without_routing_key_is_rejected() {
+    let text = "ingest = \"127.0.0.1:0\"\nsubscribe = \"127.0.0.1:0\"\n\
+                routes = [{ id = 1, rabbitmq = { exchange = \"events\" } }]\n\
+                [rabbitmq]\nurl = \"amqp://mq\"";
+
+    assert!(Config::from_toml(text).is_err());
+}
+
 /// Given a config listing the same route id twice,
 /// when it is parsed,
 /// then parsing fails naming the duplicate id.

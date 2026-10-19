@@ -15,6 +15,8 @@ pub struct Config {
     pub kafka: Option<Kafka>,
     /// Required if any route has a Redis stream.
     pub redis: Option<Redis>,
+    /// Required if any route has a RabbitMQ target.
+    pub rabbitmq: Option<RabbitMq>,
     pub routes: Vec<Route>,
 }
 
@@ -31,10 +33,17 @@ pub struct Redis {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct RabbitMq {
+    /// For example `amqp://guest:guest@127.0.0.1:5672/%2f`.
+    pub url: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct Route {
     pub id: u32,
     pub kafka: Option<KafkaRoute>,
     pub redis: Option<RedisRoute>,
+    pub rabbitmq: Option<RabbitMqRoute>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +54,14 @@ pub struct KafkaRoute {
 #[derive(Debug, Deserialize)]
 pub struct RedisRoute {
     pub stream: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RabbitMqRoute {
+    /// Defaults to the default exchange, which routes to the queue named by `routing_key`.
+    #[serde(default)]
+    pub exchange: String,
+    pub routing_key: String,
 }
 
 fn default_subscriber_buffer() -> usize {
@@ -78,6 +95,11 @@ impl Config {
             ensure!(
                 route.redis.is_none() || config.redis.is_some(),
                 "route {} has a redis stream but there is no [redis] section",
+                route.id
+            );
+            ensure!(
+                route.rabbitmq.is_none() || config.rabbitmq.is_some(),
+                "route {} has a rabbitmq target but there is no [rabbitmq] section",
                 route.id
             );
         }

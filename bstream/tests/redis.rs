@@ -1,6 +1,6 @@
 mod common;
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use bstream::{
     Router,
@@ -10,9 +10,9 @@ use bstream::{
 use bstream_client::{Client, key_hash};
 use bstream_common::frame::FrameHeader;
 use bytes::Bytes;
-use common::{READ_TIMEOUT, encode, expect_frame, read_frame, send, start, subscribe};
+use common::{encode, expect_frame, read_frame, send, start, subscribe, wait_until};
 use redis::{AsyncCommands as _, aio::MultiplexedConnection};
-use tokio::{net::TcpListener, time::sleep};
+use tokio::net::TcpListener;
 
 /// Matches the port in `docker-compose.yml`.
 const URL: &str = "redis://127.0.0.1:6379";
@@ -35,15 +35,6 @@ async fn connect() -> MultiplexedConnection {
         .get_multiplexed_async_connection()
         .await
         .unwrap()
-}
-
-/// Polls until `done` returns true, failing the test after `READ_TIMEOUT`.
-async fn wait_until<F: Future<Output = bool>>(what: &str, mut done: impl FnMut() -> F) {
-    let deadline = Instant::now() + READ_TIMEOUT;
-    while !done().await {
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        sleep(Duration::from_millis(20)).await;
-    }
 }
 
 async fn wait_for_len(conn: &MultiplexedConnection, stream: &str, len: usize) {
